@@ -1,5 +1,5 @@
 /*!
- * Vizionality Attribution v1.1.1
+ * Vizionality Attribution v1.2.0
  * First/last-touch campaign attribution, click-ID capture, form fill and
  * an optional collector that streams touches and pageviews to your platform.
  * (c) Vizionality. MIT License.
@@ -15,7 +15,7 @@
 
   if (window.VizAttribution && window.VizAttribution._initialized) return;
 
-  var VERSION = '1.1.1';
+  var VERSION = '1.2.0';
 
   // ---------------------------------------------------------------------------
   // Defaults
@@ -27,6 +27,8 @@
     sessionMinutes: 30,
     lastNonDirect: false,          // true: direct return visits keep the previous last touch
     storage: true,                 // false: keep everything in memory, write no cookie
+    serverCookie: '',              // same-origin URL that re-sets the cookie server-side (Safari).
+                                   // '' = use window.vzServerCookieUrl from the WordPress plugin; 'off' = disable
     internalHosts: [],             // extra hostnames (regex strings) treated as internal
     ignoreReferrers: [             // referrers that never create a new touch
       'paypal\\.com$', 'stripe\\.com$', 'hsforms\\.com$', 'hubspot\\.com$',
@@ -334,6 +336,44 @@
     if ((v = readCookie('_ttp'))) out._ttp = v;
 
     return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Server cookie refresh (Safari ITP)
+  // Safari caps cookies written by JavaScript at 7 days (24 h after an ad click).
+  // After this page's last cookie write, ask the site's own server to send the
+  // same cookie back in a Set-Cookie header, which Safari keeps for 400 days.
+  // Same-origin only, so the response comes from the website's own server/IP.
+  // ---------------------------------------------------------------------------
+  var serverCookieStatus = 'off';
+
+  function serverCookieUrl() {
+    var u = cfg.serverCookie;
+    if (u === 'off' || u === false) return '';
+    return u || window.vzServerCookieUrl || '';
+  }
+
+  function refreshServerCookie() {
+    var url = serverCookieUrl();
+    if (!url) { serverCookieStatus = 'off'; return; }
+    if (!cfg.storage) { serverCookieStatus = 'waiting for consent'; return; }
+    if (!window.fetch) { serverCookieStatus = 'unsupported'; return; }
+    var a = document.createElement('a');
+    a.href = url;
+    if (a.protocol + '//' + a.host !== location.protocol + '//' + location.host) {
+      serverCookieStatus = 'skipped: not same-origin';
+      return;
+    }
+    serverCookieStatus = 'pending';
+    try {
+      window.fetch(a.href, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store', keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: cfg.cookieName, domain: cookieDomain })
+      }).then(function (r) {
+        serverCookieStatus = r.ok ? (r.headers.get('X-VZ-Cookie') || 'ok') : 'error ' + r.status;
+      })['catch'](function () { serverCookieStatus = 'error'; });
+    } catch (e) { serverCookieStatus = 'error'; }
   }
 
   // Raw ad/analytics cookie values ("" when not set), for debugging and GTM variables
@@ -715,6 +755,7 @@
     function onReady() {
       fill();
       if (cfg.fill.observe) observeForms();
+      refreshServerCookie(); // after the cookie write; the plugin's URL is on the page by now
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', onReady);
     else onReady();
@@ -739,7 +780,7 @@
   function setConsent(granted) {
     if (!cfg) return;
     cfg.storage = !!granted;
-    if (granted) { persist(); flushPending(); }
+    if (granted) { persist(); refreshServerCookie(); flushPending(); }
     else writeCookie(cfg.cookieName, '', 0, cookieDomain);
   }
 
@@ -753,12 +794,25 @@
   // Send a custom event to the platform, e.g. track('pageview') after an SPA route change
   function track(type, props) {
     if (!cfg || !type) return false;
-    if (type === 'pageview') resolve();
+    if (type === 'pageview') { resolve(); refreshServerCookie(); }
     return send(String(type), props);
+  }
+
+  // Quick health check for the console: VizAttribution.status()
+  function status() {
+    return {
+      version: VERSION,
+      consent: cfg ? !!cfg.storage : null,
+      adConsent: adConsent,
+      collector: cfg ? collectorOn() : false,
+      serverCookie: serverCookieStatus,
+      cookieDomain: cookieDomain
+    };
   }
 
   var api = {
     version: VERSION,
+    status: status,
     _initialized: false,
     init: init,
     grab: grab,
