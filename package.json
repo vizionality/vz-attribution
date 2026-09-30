@@ -1,6 +1,6 @@
 {
   "name": "vz-attribution",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Vizionality first/last-touch campaign attribution, form fill and platform collector",
   "main": "dist/vz-attribution.min.js",
   "license": "MIT",

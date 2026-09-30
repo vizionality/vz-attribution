@@ -12,7 +12,7 @@ It runs in two modes:
 | Library | `src/vz-attribution.js` → `dist/vz-attribution.min.js` | The script that does the work (~4 KB gzipped) |
 | GTM template | `gtm/template.tpl` | Native, sandboxed GTM tag that configures and loads the library |
 | WordPress plugin | `wordpress/vz-attribution-gravityforms/` | Adds the hidden inputs to every Gravity Forms form and saves values as entry meta |
-| Tests | `test/` | 64 browser tests (Playwright) + 13 plugin tests |
+| Tests | `test/` | 70 browser tests (Playwright) + 13 plugin tests |
 
 ## What it captures
 
@@ -33,7 +33,7 @@ It runs in two modes:
 
 - UTMs or a click ID in the URL → new touch. A click ID without UTMs infers source/medium (`gclid` → google / cpc).
 - External referrer with no UTMs → classified as `organic` (search engines), `ai` (ChatGPT, Perplexity, Gemini, Claude, Copilot…), `social`, or `referral` (the hostname).
-- Internal pages, payment gateways (PayPal, Stripe) and SSO providers never start a new touch.
+- Internal pages, payment gateways (PayPal, Stripe), SSO providers and GTM Preview (Tag Assistant) never start a new touch.
 - Session = 30 min of inactivity. A direct return after the session ends sets last touch to `(direct) / (none)`, or keeps the previous campaign with `lastNonDirect: true`.
 - First touch is set once and kept 400 days (the browser maximum).
 
@@ -62,6 +62,18 @@ Prefer not to depend on jsDelivr? Upload `dist/vz-attribution.min.js` to any hos
 5. Preview → visit with `?utm_source=test&utm_medium=cpc&utm_campaign=vz_test` → confirm the `vz_attribution.ready` event and that form fields are filled → Publish.
 
 **dataLayer events** for triggers and variables: `vz_attribution.ready` (with a `vz_attribution` object: first/last source, medium, campaign, anonymous ID, `new_touch`, `collector`), `vz_attribution.fill`, and `vz_attribution.sent` (collector only, with `vz_sent_type`).
+
+Both `vz_attribution.ready` and `vz_attribution.fill` also carry `vz_attribution_data`, the full snapshot:
+
+| Key | What it is |
+|---|---|
+| `anonymous_id` | Persistent visitor ID (`VZ.1.<ms timestamp>.<random>`) |
+| `first` / `last` | Each touch: `utm` (source, medium, campaign, term, content…), `click` (click IDs from the URL), `landing_page`, `referrer`, `_set` (when the touch started, Unix seconds), `_exp` (on `last`: when the session expires) |
+| `cookies` | Raw values of `_ga`, `_ga_<ID>`, `_gcl_aw`, `_gcl_ag`, `_gcl_gb`, `_gcl_dc`, `_uetmsclkid`, `_fbc`, `_fbp`, `li_fat_id`, `_ttp` (empty string when not set) |
+| `ids` | The same cookies parsed: `ga_client_id`, `ga_session_id`, `gclid`, `gbraid`, `wbraid`, `dclid`, `msclkid`, … |
+| `new_touch` | `true` when this page started a new touch |
+
+Use a Data Layer Variable such as `vz_attribution_data.last.utm.source` in GTM.
 
 ## 3. Connect the forms
 
