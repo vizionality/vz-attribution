@@ -372,6 +372,113 @@ ${body}
   check('tagassistant.google.com referrer ignored', g.first.utm.source === '(direct)', g.first.utm);
   await ctx.close();
 
+
+  // 19. Server cookie refresh (Safari): endpoint re-sets the same cookie after the JS write
+  console.log('Server cookie refresh');
+  const SERVER_MAX_AGE = 7777777; // distinctive, so we can tell the server's write from the JS write
+  async function wpCtx(html, opts = {}) {
+    const hits = [];
+    const ctx = await browser.newContext();
+    await ctx.route('**/*', r => {
+      const req = r.request(), u = new URL(req.url());
+      if (u.pathname === '/wp-json/vz/v1/cookie') {
+        const cookie = req.headers()['cookie'] || '';
+        const m = cookie.match(/(?:^|;\s*)vz_attr=([^;]+)/);
+        hits.push({ method: req.method(), host: u.hostname, cookie: m ? m[1] : null, body: JSON.parse(req.postData() || '{}'), cache: req.headers()['cache-control'] });
+        const headers = { 'x-vz-cookie': m ? 'refreshed' : 'skipped', 'cache-control': 'no-store' };
+        if (m && !opts.fail) headers['set-cookie'] = `vz_attr=${m[1]}; Max-Age=${SERVER_MAX_AGE}; Path=/; Domain=.client.test; SameSite=Lax; Secure`;
+        return r.fulfill({ status: opts.fail ? 500 : 204, headers, body: '' });
+      }
+      if (u.hostname.endsWith('client.test')) return r.fulfill({ contentType: 'text/html', body: html(u) });
+      return r.fulfill({ contentType: 'text/html', body: '' });
+    });
+    return { ctx, hits };
+  }
+  const WPHEAD = '<script>window.vzServerCookieUrl="\\/wp-json\\/vz\\/v1\\/cookie";</script>';
+  const expiryOf = async c => { const k = (await c.cookies()).find(x => x.name === 'vz_attr'); return k ? k.expires - Date.now() / 1000 : null; };
+
+  let wp = await wpCtx(() => PAGE(WPHEAD));
+  p = await wp.ctx.newPage();
+  await p.goto('https://www.client.test/?utm_source=google&utm_medium=cpc&gclid=SAF1');
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  await p.waitForTimeout(400);
+  check('plugin URL picked up, one POST', wp.hits.length === 1 && wp.hits[0].method === 'POST', wp.hits);
+  const jsVal = (await wp.ctx.cookies()).find(x => x.name === 'vz_attr');
+  check('request carried the current cookie', wp.hits[0] && jsVal && wp.hits[0].cookie === jsVal.value.replace(/=/g, '%3D') || (wp.hits[0] && wp.hits[0].cookie === jsVal.value), { sent: wp.hits[0] && wp.hits[0].cookie, jar: jsVal && jsVal.value });
+  check('body names cookie + domain', wp.hits[0] && wp.hits[0].body.name === 'vz_attr' && wp.hits[0].body.domain === '.client.test', wp.hits[0] && wp.hits[0].body);
+  let exp = await expiryOf(wp.ctx);
+  check('server write is the last write (server lifetime)', exp && Math.abs(exp - SERVER_MAX_AGE) < 120, exp);
+  let st = await p.evaluate(() => VizAttribution.status());
+  check('status() reports refreshed', st.serverCookie === 'refreshed' && st.version === '1.2.0', st);
+  const idBefore = (await grab(p)).anonymous_id;
+
+  // second page: JS writes again (session timer), then server re-sets again
+  await p.goto('https://www.client.test/contact', { referer: 'https://www.client.test/' });
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  await p.waitForTimeout(400);
+  exp = await expiryOf(wp.ctx);
+  check('refreshed again on next page', wp.hits.length === 2 && Math.abs(exp - SERVER_MAX_AGE) < 120, { hits: wp.hits.length, exp });
+  check('same anon id after server refresh', (await grab(p)).anonymous_id === idBefore);
+  check('first touch intact after server refresh', (await grab(p)).first.click.gclid === 'SAF1');
+  // SPA pageview triggers a refresh too
+  await p.evaluate(() => VizAttribution.track('pageview'));
+  await p.waitForTimeout(300);
+  check('track(pageview) refreshes', wp.hits.length === 3, wp.hits.length);
+  await wp.ctx.close();
+
+  // no plugin URL -> nothing called
+  wp = await wpCtx(() => PAGE());
+  p = await wp.ctx.newPage();
+  await p.goto('https://www.client.test/?utm_source=a&utm_medium=b');
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  await p.waitForTimeout(300);
+  check('no URL -> no request, status off', wp.hits.length === 0 && (await p.evaluate(() => VizAttribution.status().serverCookie)) === 'off');
+  await wp.ctx.close();
+
+  // 'off' overrides the plugin; cross-origin URL refused
+  wp = await wpCtx(() => PAGE(WPHEAD));
+  p = await wp.ctx.newPage();
+  await p.goto('https://www.client.test/');
+  await p.evaluate(() => VizAttribution.init({ serverCookie: 'off', adapters: { hubspot: false } }));
+  await p.waitForTimeout(300);
+  check("serverCookie 'off' disables", wp.hits.length === 0);
+  await p.goto('https://www.client.test/');
+  await p.evaluate(() => VizAttribution.init({ serverCookie: 'https://tracker.example.com/wp-json/vz/v1/cookie', adapters: { hubspot: false } }));
+  await p.waitForTimeout(300);
+  check('cross-origin URL refused', wp.hits.length === 0 && (await p.evaluate(() => VizAttribution.status().serverCookie)) === 'skipped: not same-origin');
+  await wp.ctx.close();
+
+  // consent: nothing until granted, then refresh
+  wp = await wpCtx(() => PAGE(WPHEAD));
+  p = await wp.ctx.newPage();
+  await p.goto('https://www.client.test/?utm_source=bing&utm_medium=cpc');
+  await p.evaluate(() => VizAttribution.init({ storage: false, adapters: { hubspot: false } }));
+  await p.waitForTimeout(300);
+  check('no refresh before consent', wp.hits.length === 0 && (await p.evaluate(() => VizAttribution.status().serverCookie)) === 'waiting for consent');
+  await p.evaluate(() => VizAttribution.setConsent(true));
+  await p.waitForTimeout(300);
+  check('refresh after consent granted', wp.hits.length === 1 && wp.hits[0].cookie);
+  await wp.ctx.close();
+
+  // subdomain: go. calls its own origin; cookie still set on the parent domain
+  wp = await wpCtx(() => PAGE(WPHEAD));
+  p = await wp.ctx.newPage();
+  await p.goto('https://go.client.test/?utm_source=facebook&utm_medium=paid_social');
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  await p.waitForTimeout(300);
+  check('subdomain calls its own origin with parent domain', wp.hits[0] && wp.hits[0].host === 'go.client.test' && wp.hits[0].body.domain === '.client.test', wp.hits[0]);
+  await wp.ctx.close();
+
+  // endpoint failure is harmless
+  wp = await wpCtx(() => PAGE(WPHEAD), { fail: true });
+  p = await wp.ctx.newPage();
+  await p.goto('https://www.client.test/?utm_source=x&utm_medium=y');
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  await p.waitForTimeout(300);
+  st = await p.evaluate(() => VizAttribution.status());
+  check('endpoint 500 -> status error, attribution unaffected', st.serverCookie === 'error 500' && (await grab(p)).last.utm.source === 'x', st);
+  await wp.ctx.close();
+
   await browser.close();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
