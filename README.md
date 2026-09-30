@@ -11,8 +11,8 @@ It runs in two modes:
 |---|---|---|
 | Library | `src/vz-attribution.js` → `dist/vz-attribution.min.js` | The script that does the work (~4 KB gzipped) |
 | GTM template | `gtm/template.tpl` | Native, sandboxed GTM tag that configures and loads the library |
-| WordPress plugin | `wordpress/vz-attribution-gravityforms/` | Adds the hidden inputs to every Gravity Forms form and saves values as entry meta |
-| Tests | `test/` | 70 browser tests (Playwright) + 13 plugin tests |
+| WordPress plugin | `wordpress/vz-attribution-gravityforms/` | Adds the hidden inputs to every Gravity Forms form, saves values as entry meta, and re-sets the cookie server-side so Safari keeps it |
+| Tests | `test/` | 86 browser tests (Playwright) + 30 plugin tests |
 
 ## What it captures
 
@@ -119,6 +119,24 @@ add_filter('vz_attribution/config', fn() => ['sessionMinutes' => 30]);
 
 The plugin never fills values server-side (so page caching can't leak one visitor's UTMs to another) and makes no outbound requests. For automatic updates, use [Git Updater](https://git-updater.com/) with the `GitHub Plugin URI` header, or update manually.
 
+## Safari: keeping the visitor for 400 days, not 7
+
+Safari deletes cookies written by JavaScript after 7 days (24 hours when the visitor lands from an ad click with a click ID). Cookies set in an HTTP response from the site's own server are not capped. So after each page's last cookie write, the library POSTs to a same-origin endpoint that sends the exact same `vz_attr` value back in a `Set-Cookie` header with a 400-day lifetime.
+
+**WordPress (automatic):** install the plugin (v1.1.0+). It adds `POST /wp-json/vz/v1/cookie` and prints `window.vzServerCookieUrl` in the page head, which the library picks up. Nothing to configure in GTM. Works on every subdomain that runs the plugin, and the cookie stays on the parent domain (e.g. `.hearthsidepatio.com`).
+
+How the endpoint stays safe:
+- It only echoes a cookie the browser sent, byte for byte. It never creates or changes values, so it can't be used to plant data.
+- Only allowed cookie names (`vz_attr` by default, filter `vz_attribution/server_cookie/names`) and only this host or a parent domain of it.
+- `POST` with `Cache-Control: no-store`, so page caches and CDNs never store or replay it.
+- Disable with `add_filter('vz_attribution/server_cookie', '__return_false');`
+
+**Other sites:** set **Server cookie refresh URL** in the template (Storage & consent) to a same-origin path whose handler does the same thing. It must be served by the website's own server: Safari also caps server-set cookies when the responding server's IP doesn't match the site's (e.g. a subdomain CNAMEd to a third-party tracker). Enter `off` to disable.
+
+**Check it:** run `VizAttribution.status()` in the console. `serverCookie: "refreshed"` means it worked. Other values: `off` (no endpoint), `waiting for consent`, `skipped: not same-origin`, `error <code>`. In Safari's Web Inspector (Storage → Cookies), `vz_attr` should expire about 400 days out.
+
+**What no cookie can fix:** private browsing, cleared cookies, and different devices. Those connect only when the visitor submits a form or calls.
+
 ## 4. Platform collector (optional)
 
 Set **Collector endpoint** and **Site key** in the template's *Platform collector* group. With no endpoint, nothing is ever sent.
@@ -165,9 +183,10 @@ VizAttribution.fill(rootElement?)      // fill forms now (e.g. after a custom mo
 VizAttribution.setConsent(true|false)  // start storing / delete the cookie (also gates the collector)
 VizAttribution.setAdConsent(true|false)// collector only: allow/deny sending to the platform
 VizAttribution.track(type, props?)     // collector only: send a custom event, or 'pageview' for SPAs
+VizAttribution.status()                // { version, consent, adConsent, collector, serverCookie, cookieDomain }
 ```
 
-Options (all optional): `cookieName`, `cookieDomain` (`'auto'`), `sessionMinutes`, `firstTouchDays`, `lastNonDirect`, `storage`, `internalHosts`, `ignoreReferrers`, `extraIgnoreReferrers`, `ga4MeasurementId`, `fieldNames`, `fill.{byName, classPrefix, attribute, overwrite, observe}`, `adapters.{hubspot, hubspotPrefix, gravityForms, activecampaign, activecampaignFields}`, `collector.{endpoint, siteKey, pageviews, phoneClicks, numberSelector, dniWaitMs, adConsent}`, `dataLayerName`, `eventPrefix`, `compatCampaignCollector`, `rules`. Defaults are at the top of `src/vz-attribution.js`.
+Options (all optional): `cookieName`, `cookieDomain` (`'auto'`), `serverCookie` (`''` = WordPress plugin, a same-origin URL, or `'off'`), `sessionMinutes`, `firstTouchDays`, `lastNonDirect`, `storage`, `internalHosts`, `ignoreReferrers`, `extraIgnoreReferrers`, `ga4MeasurementId`, `fieldNames`, `fill.{byName, classPrefix, attribute, overwrite, observe}`, `adapters.{hubspot, hubspotPrefix, gravityForms, activecampaign, activecampaignFields}`, `collector.{endpoint, siteKey, pageviews, phoneClicks, numberSelector, dniWaitMs, adConsent}`, `dataLayerName`, `eventPrefix`, `compatCampaignCollector`, `rules`. Defaults are at the top of `src/vz-attribution.js`.
 
 ## Migrating a site from Campaign Collector
 
