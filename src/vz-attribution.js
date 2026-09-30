@@ -1,5 +1,5 @@
 /*!
- * Vizionality Attribution v1.1.0
+ * Vizionality Attribution v1.1.1
  * First/last-touch campaign attribution, click-ID capture, form fill and
  * an optional collector that streams touches and pageviews to your platform.
  * (c) Vizionality. MIT License.
@@ -15,7 +15,7 @@
 
   if (window.VizAttribution && window.VizAttribution._initialized) return;
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
 
   // ---------------------------------------------------------------------------
   // Defaults
@@ -30,7 +30,8 @@
     internalHosts: [],             // extra hostnames (regex strings) treated as internal
     ignoreReferrers: [             // referrers that never create a new touch
       'paypal\\.com$', 'stripe\\.com$', 'hsforms\\.com$', 'hubspot\\.com$',
-      'accounts\\.google\\.com$', 'login\\.microsoftonline\\.com$'
+      'accounts\\.google\\.com$', 'login\\.microsoftonline\\.com$',
+      'tagassistant\\.google\\.com$'   // GTM Preview / Tag Assistant
     ],
     extraIgnoreReferrers: [],      // added to ignoreReferrers (keeps the defaults)
     ga4MeasurementId: '',          // 'G-XXXXXXX'; empty = auto-detect first _ga_* cookie
@@ -335,6 +336,29 @@
     return out;
   }
 
+  // Raw ad/analytics cookie values ("" when not set), for debugging and GTM variables
+  var RAW_COOKIES = ['_ga', '_gcl_aw', '_gcl_ag', '_gcl_gb', '_gcl_dc', '_uetmsclkid', '_fbc', '_fbp', 'li_fat_id', '_ttp'];
+  function readRawCookies() {
+    var out = {}, m, re = /(?:^|;\s*)(_ga_[A-Z0-9]+)=/g;
+    RAW_COOKIES.forEach(function (name) { out[name] = readCookie(name) || ''; });
+    while ((m = re.exec(document.cookie))) out[m[1]] = readCookie(m[1]) || '';
+    return out;
+  }
+
+  // Full attribution snapshot pushed to the dataLayer on ready and fill
+  function snapshot() {
+    var g = grab();
+    if (!g) return null;
+    return {
+      anonymous_id: g.anonymous_id,
+      first: g.first,
+      last: g.last,
+      cookies: readRawCookies(),
+      ids: g.cookies,
+      new_touch: pageNewTouch
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Public data
   // ---------------------------------------------------------------------------
@@ -438,7 +462,7 @@
 
     if (cfg.adapters.activecampaign) count += fillActiveCampaign(scope);
 
-    if (count) dl().push({ event: cfg.eventPrefix + '.fill', vz_fields_filled: count });
+    if (count) dl().push({ event: cfg.eventPrefix + '.fill', vz_fields_filled: count, vz_attribution_data: snapshot() });
     return count;
   }
 
@@ -703,7 +727,8 @@
         first_source: g.first.utm.source, first_medium: g.first.utm.medium, first_campaign: g.first.utm.campaign,
         last_source: g.last.utm.source, last_medium: g.last.utm.medium, last_campaign: g.last.utm.campaign,
         new_touch: pageNewTouch, collector: collectorOn()
-      }
+      },
+      vz_attribution_data: snapshot()
     });
 
     return api;
