@@ -345,6 +345,33 @@ ${body}
   check('AC mapping independent of renames', await val(p, '[name="field[12]"]') === 'bing');
   await ctx.close();
 
+
+  // 18. Full snapshot on fill/ready + Tag Assistant referrer ignored
+  console.log('Snapshot & Tag Assistant');
+  ctx = await newCtx(() => PAGE());
+  p = await ctx.newPage();
+  await ctx.addCookies([{ name: '_fbp', value: 'fb.1.1790721348545.31787', domain: '.client.test', path: '/' },
+                        { name: '_ga', value: 'GA1.1.1555838360.1790721349', domain: '.client.test', path: '/' },
+                        { name: '_ga_E2T8JBEDM6', value: 'GS2.1.s1790721348$o1$g1$t1790721361$j47$l0$h0', domain: '.client.test', path: '/' }]);
+  await p.goto('https://www.client.test/?utm_source=facebook&utm_medium=paid_social&utm_campaign=vz_test_meta&fbclid=FB1');
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  const fillEvt = await p.evaluate(() => dataLayer.find(e => e.event === 'vz_attribution.fill'));
+  const d = fillEvt && fillEvt.vz_attribution_data;
+  check('fill carries snapshot', d && /^VZ\.1\./.test(d.anonymous_id) && d.first.utm.source === 'facebook' && d.last.utm.campaign === 'vz_test_meta', d);
+  check('snapshot has click ids + touch timing', d && d.last.click.fbclid === 'FB1' && typeof d.last._set === 'number' && typeof d.last._exp === 'number', d && d.last);
+  check('snapshot raw cookies', d && d.cookies._fbp === 'fb.1.1790721348545.31787' && d.cookies._ga_E2T8JBEDM6.indexOf('GS2.1') === 0 && d.cookies._gcl_aw === '', d && d.cookies);
+  check('snapshot parsed ids', d && d.ids.ga_client_id === '1555838360.1790721349' && d.ids.ga_session_id === '1790721348', d && d.ids);
+  const readyEvt = await p.evaluate(() => dataLayer.find(e => e.event === 'vz_attribution.ready'));
+  check('ready carries snapshot', readyEvt && readyEvt.vz_attribution_data && readyEvt.vz_attribution_data.anonymous_id === d.anonymous_id);
+  await ctx.close();
+  ctx = await newCtx(() => PAGE());
+  p = await ctx.newPage();
+  await p.goto('https://www.client.test/', { referer: 'https://tagassistant.google.com/' });
+  await p.evaluate(() => VizAttribution.init({ adapters: { hubspot: false } }));
+  g = await grab(p);
+  check('tagassistant.google.com referrer ignored', g.first.utm.source === '(direct)', g.first.utm);
+  await ctx.close();
+
   await browser.close();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
