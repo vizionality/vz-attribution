@@ -136,6 +136,14 @@ ___TEMPLATE_PARAMETERS___
         "simpleValueType": true,
         "defaultValue": true,
         "help": "Before consent, attribution is kept in memory for the page so forms still fill. The cookie is written as soon as consent is granted and deleted if it is revoked."
+      },
+      {
+        "type": "TEXT",
+        "name": "serverCookie",
+        "displayName": "Server cookie refresh URL (Safari)",
+        "simpleValueType": true,
+        "defaultValue": "",
+        "help": "Leave empty to use the Vizionality WordPress plugin automatically. On other sites, a same-origin path that re-sets the cookie server-side, e.g. /api/vz-cookie. Enter off to disable."
       }
     ]
   },
@@ -420,6 +428,7 @@ const config = {
   firstTouchDays: makeNumber(data.firstTouchDays) || 400,
   lastNonDirect: data.lastNonDirect === true,
   storage: storage,
+  serverCookie: data.serverCookie || '',
   internalHosts: lines(data.internalHosts),
   extraIgnoreReferrers: lines(data.extraIgnoreReferrers),
   ga4MeasurementId: data.ga4MeasurementId || '',
@@ -821,5 +830,5 @@ scenarios:
 
 ___NOTES___
 
-Vizionality Attribution v1.1.0
+Vizionality Attribution v1.2.0
 

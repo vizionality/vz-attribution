@@ -35,6 +35,8 @@ params = [
     text("cookieDomain", "Cookie domain", "auto", "'auto' uses the top-level domain so subdomains share attribution. Leave empty for a host-only cookie."),
     check("respectConsent", "Only store the cookie when analytics_storage consent is granted (Google Consent Mode)", True,
           "Before consent, attribution is kept in memory for the page so forms still fill. The cookie is written as soon as consent is granted and deleted if it is revoked."),
+    text("serverCookie", "Server cookie refresh URL (Safari)", "",
+         "Leave empty to use the Vizionality WordPress plugin automatically. On other sites, a same-origin path that re-sets the cookie server-side, e.g. /api/vz-cookie. Enter off to disable."),
   ]),
   group("fillGroup", "Form filling", [
     check("fillByName", "Fill inputs whose name matches a field (e.g. name=\"utm_source\")", True),
@@ -127,6 +129,7 @@ const config = {
   firstTouchDays: makeNumber(data.firstTouchDays) || 400,
   lastNonDirect: data.lastNonDirect === true,
   storage: storage,
+  serverCookie: data.serverCookie || '',
   internalHosts: lines(data.internalHosts),
   extraIgnoreReferrers: lines(data.extraIgnoreReferrers),
   ga4MeasurementId: data.ga4MeasurementId || '',
@@ -254,6 +257,6 @@ out.append("___TEMPLATE_PARAMETERS___\n\n" + json.dumps(params, indent=2) + "\n\
 out.append("___SANDBOXED_JS_FOR_WEB_TEMPLATE___\n\n" + code + "\n\n")
 out.append("___WEB_PERMISSIONS___\n\n" + json.dumps(perms, indent=2) + "\n\n\n")
 out.append("___TESTS___\n\n" + tests + "\n\n")
-out.append("___NOTES___\n\nVizionality Attribution v1.1.0\n\n")
+out.append("___NOTES___\n\nVizionality Attribution v1.2.0\n\n")
 open(__import__("os").path.join(__import__("os").path.dirname(__file__), "template.tpl"), "w").write("".join(out))
 print("ok")
