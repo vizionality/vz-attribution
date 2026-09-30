@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       Vizionality Attribution for Gravity Forms
- * Description:       Adds campaign attribution hidden fields to every Gravity Forms form and saves them as entry meta. Values are filled in the browser by the Vizionality Attribution library (vz-attribution.js).
- * Version:           1.0.0
+ * Description:       Adds campaign attribution hidden fields to every Gravity Forms form and saves them as entry meta. Values are filled in the browser by the Vizionality Attribution library (vz-attribution.js). Also re-sets the attribution cookie from the server so Safari keeps it for 400 days instead of 7.
+ * Version:           1.1.0
  * Requires at least: 6.3
  * Requires PHP:      7.4
  * Author:            Vizionality
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 
 final class GravityForms
 {
-    const VERSION   = '1.0.0';
+    const VERSION   = '1.1.0';
     const META_NS   = 'vz';               // entry meta keys are stored as vz:<field>
     const HOOK_NS   = 'vz_attribution';   // filter prefix
     const MAX_LEN   = 500;
@@ -62,6 +62,12 @@ final class GravityForms
 
     const JSON_FIELDS = ['vz_attribution_json'];
 
+    // Server-side cookie refresh (Safari ITP): POST /wp-json/vz/v1/cookie
+    const REST_NS        = 'vz/v1';
+    const REST_ROUTE     = '/cookie';
+    const COOKIE_MAX_AGE = 34560000;  // 400 days, the browser maximum
+    const COOKIE_MAX_LEN = 3800;
+
     private static $instance = null;
 
     public static function instance(): self
@@ -74,6 +80,10 @@ final class GravityForms
 
     private function __construct()
     {
+        // Server cookie refresh works with or without Gravity Forms.
+        add_action('rest_api_init', [$this, 'register_rest']);
+        add_action('wp_head', [$this, 'print_server_cookie_url'], 1);
+
         if (did_action('gform_loaded')) {
             $this->register();
         } else {
@@ -218,6 +228,125 @@ final class GravityForms
             }
         });
         return (string) wp_json_encode($decoded);
+    }
+
+    // -------------------------------------------------------------------------
+    // Server cookie refresh (Safari)
+    //
+    // Safari caps cookies written by JavaScript at 7 days (24 hours after an ad
+    // click). Cookies set in an HTTP response from the site's own server are not
+    // capped. vz-attribution.js POSTs here after every page load; this endpoint
+    // reads the visitor's own vz_attr cookie from the request and sends the exact
+    // same value back in a Set-Cookie header with a 400-day lifetime.
+    //
+    // Filters:
+    //   vz_attribution/server_cookie        (bool)  false disables the endpoint
+    //   vz_attribution/server_cookie/names  (array) cookie names allowed, default ['vz_attr']
+    // -------------------------------------------------------------------------
+
+    public function server_cookie_enabled(): bool
+    {
+        return (bool) apply_filters(self::HOOK_NS . '/server_cookie', true);
+    }
+
+    /** Same-origin path of the endpoint, e.g. /wp-json/vz/v1/cookie (or /?rest_route=... on plain permalinks). */
+    public function server_cookie_path(): string
+    {
+        $parts = wp_parse_url(rest_url(self::REST_NS . self::REST_ROUTE));
+        $path  = isset($parts['path']) ? $parts['path'] : '/';
+        return $path . (isset($parts['query']) ? '?' . $parts['query'] : '');
+    }
+
+    /** Tells the library where the endpoint is. Static per site, so safe with page caching. */
+    public function print_server_cookie_url(): void
+    {
+        if (!$this->server_cookie_enabled()) {
+            return;
+        }
+        echo '<script>window.vzServerCookieUrl=' . wp_json_encode($this->server_cookie_path()) . ";</script>\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- JSON-encoded
+    }
+
+    public function register_rest(): void
+    {
+        if (!$this->server_cookie_enabled()) {
+            return;
+        }
+        register_rest_route(self::REST_NS, self::REST_ROUTE, [
+            'methods'             => 'POST',
+            'callback'            => [$this, 'rest_refresh_cookie'],
+            'permission_callback' => '__return_true', // only ever echoes the caller's own cookie
+        ]);
+    }
+
+    public function rest_refresh_cookie($request)
+    {
+        $body   = json_decode((string) $request->get_body(), true);
+        $name   = is_array($body) && isset($body['name']) && is_string($body['name']) ? $body['name'] : 'vz_attr';
+        $domain = is_array($body) && isset($body['domain']) && is_string($body['domain']) ? $body['domain'] : '';
+
+        $header = $this->refresh_cookie_header(
+            $name,
+            $domain,
+            isset($_SERVER['HTTP_COOKIE']) ? (string) $_SERVER['HTTP_COOKIE'] : '',
+            isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '',
+            is_ssl()
+        );
+
+        $response = new \WP_REST_Response(null, 204);
+        $response->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private');
+        $response->header('X-VZ-Cookie', $header ? 'refreshed' : 'skipped');
+        if ($header) {
+            $response->header('Set-Cookie', $header);
+        }
+        return $response;
+    }
+
+    /**
+     * Builds the Set-Cookie header, or null when nothing should be set.
+     * Only re-sets a cookie the browser already sent, byte for byte, on this host or a parent domain of it.
+     */
+    public function refresh_cookie_header(string $name, string $domain, string $raw_cookies, string $host, bool $secure): ?string
+    {
+        if (!$this->server_cookie_enabled()) {
+            return null;
+        }
+        $names = (array) apply_filters(self::HOOK_NS . '/server_cookie/names', ['vz_attr']);
+        if (!preg_match('/^[A-Za-z0-9_]{1,64}$/', $name) || !in_array($name, $names, true)) {
+            return null;
+        }
+
+        $value = self::raw_cookie($raw_cookies, $name);
+        if ($value === null || $value === '' || strlen($value) > self::COOKIE_MAX_LEN || !preg_match('/^[A-Za-z0-9%._~-]+$/', $value)) {
+            return null;
+        }
+
+        $host   = strtolower((string) preg_replace('/:\d+$/', '', trim($host)));
+        $domain = strtolower(ltrim(trim($domain), '.'));
+        $domain_attr = '';
+        if ($domain !== '') {
+            if ($host === '' || !($host === $domain || substr($host, -(strlen($domain) + 1)) === '.' . $domain)) {
+                return null;
+            }
+            $domain_attr = '; Domain=.' . $domain;
+        }
+
+        return $name . '=' . $value .
+            '; Max-Age=' . self::COOKIE_MAX_AGE .
+            '; Expires=' . gmdate('D, d M Y H:i:s', time() + self::COOKIE_MAX_AGE) . ' GMT' .
+            '; Path=/' . $domain_attr . '; SameSite=Lax' . ($secure ? '; Secure' : '');
+    }
+
+    /** Raw (still URL-encoded) cookie value from a Cookie header, so it is echoed back unchanged. */
+    public static function raw_cookie(string $header, string $name): ?string
+    {
+        foreach (explode(';', $header) as $pair) {
+            $pair = trim($pair);
+            $eq   = strpos($pair, '=');
+            if ($eq !== false && substr($pair, 0, $eq) === $name) {
+                return substr($pair, $eq + 1);
+            }
+        }
+        return null;
     }
 
     // -------------------------------------------------------------------------
