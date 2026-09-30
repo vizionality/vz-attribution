@@ -1,0 +1,15 @@
+{
+  "name": "vz-attribution",
+  "version": "1.1.0",
+  "description": "Vizionality first/last-touch campaign attribution, form fill and platform collector",
+  "main": "dist/vz-attribution.min.js",
+  "license": "MIT",
+  "scripts": {
+    "build": "terser src/vz-attribution.js -c -m --comments \"/^!/\" -o dist/vz-attribution.min.js && cp src/vz-attribution.js dist/",
+    "test": "npm run build && node test/test.js && php test/wordpress-plugin.test.php"
+  },
+  "devDependencies": {
+    "playwright": "^1.47.0",
+    "terser": "^5.31.0"
+  }
+}
